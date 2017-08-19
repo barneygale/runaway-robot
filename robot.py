@@ -5,15 +5,12 @@ By Barney Gale
 The trick to this solution is to categorize moves by their widths and heights.
 Each move must have a manhattan distance between the minimum and maximum move
 length. For each such combination of width and height, we generate a window
-of those dimensions and tile it diagonally across the board, which bakes
-information about that board into the window. We then use a conventional
-backtracking algorithm to solve the window, where possible. The board and each
-window are optimized to remove dead ends and, in the former case, unreachable
-positions.
+of those dimensions and tile it diagonally across the board, which bakes info
+about that board into the window. We remove dead ends simultaneously. Any
+window where (0, 0) is not an obstacle is trivially solvable.
 
-This is still an exponential-time algorithm, but it performs significantly
-better than naive backtracking, with no hacker.org level taking more than about
-a second.
+No hacker.org level takes more than about a second. This algorithm doesn't use
+any backtracking, and I believe it runs in polynomial time
 """
 
 
@@ -28,102 +25,83 @@ PASSWORD = ""
 
 
 session = requests.Session()
+window = numpy.empty(shape=(500, 500), dtype=numpy.bool)
 
-
-def simplify_unreachable(terrain):
-    """
-    Mark the following unreachable positions as bombs:
-
-    - Positions to the right of the leftmost bomb in the first row
-    - Positions below the topmost bomb in the first column
-    - Positions with bombs immediately above and to the left
-    """
-
-    seen = False
-    for x in xrange(terrain.shape[0]):
-        if seen:
-            terrain[x, 0] = True
-        elif terrain[x, 0]:
-            seen = True
-
-    seen = False
-    for y in xrange(terrain.shape[1]):
-        if seen:
-            terrain[0, y] = True
-        elif terrain[0, y]:
-            seen = True
-
-    for y in xrange(1, terrain.shape[1]):
-        for x in xrange(1, terrain.shape[0]):
-            if terrain[x-1, y] and terrain[x, y-1]:
-                terrain[x, y] = True
-
-
-def simplify_terminal(terrain):
-    """
-    Mark as bombs any positions with bombs immediately below and to the right.
-    """
-
-    for y in xrange(terrain.shape[1]-2, -1, -1):
-        for x in xrange(terrain.shape[0]-2, -1, -1):
-            if terrain[x+1, y] and terrain[x, y+1]:
-                terrain[x, y] = True
-
-
-def make_window(board, wx, wy):
-    """
-    Returns a rectangular window on to the given board. Each position in the
-    window is the boolean OR of positions on the board moving diagonally in
-    (wx, wy) steps from the start position.
-    """
-
-    window = numpy.zeros((wx + 1, wy + 1), dtype=numpy.bool)
-    for y in xrange(window.shape[1]):
-        for x in xrange(window.shape[0]):
-            window[x, y] = any(board[x::wx, y::wy].diagonal())
-
-    return window
-    
 
 def solve_board(board, move_min, move_max):
     """
     Iterate over possible window dimensions and attempt to solve each one.
     """
 
-    simplify_unreachable(board)
-    simplify_terminal(board)
-    for move_len in xrange(move_min, move_max+1):
-        for wx in xrange(1, move_len):
-            wy = move_len - wx
-            if not any(board[::wx, ::wy].diagonal()):
-                window = make_window(board, wx, wy)
-                solution = solve_window(window)
-                if solution is not None:
-                    return solution
-   
+    # Generate window sizes
+    window_sizes = [
+        (h, move_len - h)
+        for move_len in xrange(move_min, move_max + 1)
+        for h in xrange(1, move_len)]
 
-def solve_window(window):
+    # Check square-ish windows first
+    window_sizes.sort(key=lambda size: abs(size[0] - size[1]))
+
+    # Attempt to solve each window
+    for h, w in window_sizes:
+        solution = solve_window(board, h, w)
+        if solution:
+            return solution
+
+
+def solve_window(board, h, w):
     """
     Finds a path from the top left to the bottom right in the given window.
     """
 
-    simplify_terminal(window)
-    stack = [[]]
-    while len(stack) > 0:
-        move = stack.pop(-1)
-        x, y = move.count("R"), move.count("D")
-        if x < window.shape[0] and y < window.shape[1] and not window[x, y]:
-            if x == window.shape[0]-1 and y == window.shape[1]-1:
-                return "".join(move)
-            stack.append(move + ["R"])
-            stack.append(move + ["D"])
+    # Skip unsolvable window
+    if any(board[h::h, w::w].diagonal()):
+        return
+
+    # Add the window border
+    for y in xrange(h): window[y, w + 1] = True
+    for x in xrange(w): window[h + 1, x] = True
+    window[h, w + 1] = False
+    window[h + 1, w] = False
+
+    # Load the window data
+    for y in xrange(h, -1, -1):
+        solvable = False
+        for x in xrange(w, -1, -1):
+            if (window[y + 1, x] and window[y, x + 1]) \
+                    or any(board[y::h, x::w].diagonal()):
+                window[y, x] = True
+            else:
+                window[y, x] = False
+                solvable = True
+
+        # Skip unsolvable window
+        if not solvable:
+            return
+
+    # Skip unsolvable window
+    if window[0, 0]:
+        return
+
+    # Find the solution
+    y, x = 0, 0
+    solution = []
+    while y != h or x != w :
+        if not window[y+1, x]:
+            y += 1
+            solution.append("D")
+        else:
+            x += 1
+            solution.append("R")
+
+    return "".join(solution)
 
 
 def main():
     request = {'name': USERNAME, 'password': PASSWORD}
     while True:
         # Request the level
-        response = requests.get(
+        response = session.get(
             url="http://www.hacker.org/runaway/index.php",
             params=request)
         response = dict(re.findall('FV(\w+)=([^"&]+)', response.text))
@@ -135,7 +113,6 @@ def main():
         board = board.reshape(
             int(response['boardY']),
             int(response['boardX']))
-        board = board.transpose()
 
         # Solve!
         start = time.time()
